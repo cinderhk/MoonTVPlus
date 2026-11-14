@@ -92,7 +92,8 @@ skills-lock.json
 *.docx
 /docs/
 /documentation/
-CHANGELOG*
+/CHANGELOG
+/CHANGELOG.*
 .env*
 **/.gradle/
 **/build/

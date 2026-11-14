@@ -46,7 +46,8 @@ apps/
 *.docx
 /docs/
 /documentation/
-CHANGELOG*
+/CHANGELOG
+/CHANGELOG.*
 .env*
 **/.gradle/
 **/build/
