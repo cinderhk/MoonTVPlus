@@ -1,0 +1,65 @@
+.env
+.env*.local
+.git
+**/node_modules
+.next
+.pnpm-store
+.turbo
+coverage
+*.log
+*.tsbuildinfo
+/.data
+/data
+/downloads
+
+# PWA outputs are regenerated from source during the image build.
+public/sw.js
+public/sw.js.map
+public/workbox-*.js
+public/workbox-*.js.map
+public/worker-*.js
+public/worker-*.js.map
+public/fallback-*.js
+public/fallback-*.js.map
+public/libbitsub
+
+public/screenshot1.png
+public/screenshot2.png
+public/screenshot3.png
+
+# Android/TV native app sources are not needed in Docker image builds
+apps/
+
+
+# Local build/export artifacts
+/.swc/
+/*.tar
+/*.tar.gz
+/*.tgz
+
+# Source-only repository: omit documentation and local development outputs
+*.md
+*.mdx
+*.rst
+*.pdf
+*.doc
+*.docx
+/docs/
+/documentation/
+CHANGELOG*
+.env*
+**/.gradle/
+**/build/
+**/out/
+**/.cache/
+**/.idea/
+*.apk
+*.aab
+*.ipa
+public/worker-*.js
+public/worker-*.js.map
+public/fallback-*.js
+public/fallback-*.js.map
+
+# Screenshots used only by excluded documentation
+public/screenshot*.png
