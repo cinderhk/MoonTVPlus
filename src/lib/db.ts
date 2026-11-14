@@ -1140,6 +1140,9 @@ export class DbManager {
 
   // ---------- 通用键值存储 ----------
   async getGlobalValue(key: string): Promise<string | null> {
+    // Browser-only storage has no server-side registry. Layouts still read the
+    // enabled source list on public pages such as /login.
+    if (!this.storage) return null;
     if (typeof (this.storage as any).getGlobalValue === 'function') {
       return (this.storage as any).getGlobalValue(key);
     }
@@ -1147,12 +1150,18 @@ export class DbManager {
   }
 
   async setGlobalValue(key: string, value: string): Promise<void> {
+    if (!this.storage) {
+      throw new Error('当前存储模式不支持保存全局配置，请启用服务端存储');
+    }
     if (typeof (this.storage as any).setGlobalValue === 'function') {
       await (this.storage as any).setGlobalValue(key, value);
     }
   }
 
   async deleteGlobalValue(key: string): Promise<void> {
+    if (!this.storage) {
+      throw new Error('当前存储模式不支持修改全局配置，请启用服务端存储');
+    }
     if (typeof (this.storage as any).deleteGlobalValue === 'function') {
       await (this.storage as any).deleteGlobalValue(key);
     }

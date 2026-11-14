@@ -67,23 +67,31 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          docker run -d --name moontv-smoke -p 127.0.0.1:3000:3000 \
-            -e PASSWORD=ci-container-smoke-test \
-            -e NEXT_PUBLIC_STORAGE_TYPE=sqlite \
-            "${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
-          ready=false
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:3000/login >/dev/null; then
-              ready=true
-              break
+          for mode in default localstorage; do
+            args=()
+            if [ "$mode" = localstorage ]; then
+              args+=(-e NEXT_PUBLIC_STORAGE_TYPE=localstorage)
             fi
-            sleep 2
+            docker run -d --name "moontv-smoke-${mode}" -p 127.0.0.1:3000:3000 \
+              -e PASSWORD=ci-container-smoke-test "${args[@]}" \
+              "${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
+            ready=false
+            for attempt in $(seq 1 60); do
+              if curl --fail --silent http://127.0.0.1:3000/login >/dev/null; then
+                ready=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$ready" != true ]; then
+              docker logs "moontv-smoke-${mode}"
+              exit 1
+            fi
+            if [ "$mode" = default ]; then
+              docker exec "moontv-smoke-${mode}" test -s /app/.data/moontv.db
+            fi
+            docker rm -f "moontv-smoke-${mode}"
           done
-          if [ "$ready" != true ]; then
-            docker logs moontv-smoke
-            exit 1
-          fi
-          docker rm -f moontv-smoke
 
       - name: Export image digest
         env:
