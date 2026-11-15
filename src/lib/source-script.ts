@@ -749,6 +749,18 @@ export function normalizeScriptSources(result: any): ScriptSourceDescriptor[] {
     }));
 }
 
+function scriptSourceDisplayName(scriptName: string, sourceName: string): string {
+  const parts = sourceName.split(/\s*[/／]\s*/).filter(Boolean);
+  const name = parts[parts.length - 1] || '';
+  if (!name || /^(主站|默认源?|main|default)$/i.test(name)) {
+    const scriptParts = scriptName.split(/\s*[/／]\s*/).filter(Boolean);
+    return parts.length > 1
+      ? parts[0]
+      : scriptParts[scriptParts.length - 1] || '脚本源';
+  }
+  return name;
+}
+
 export function normalizeScriptSearchResults(input: {
   scriptKey: string;
   scriptName: string;
@@ -788,7 +800,7 @@ export function normalizeScriptSearchResults(input: {
       episodes,
       episodes_titles: titles,
       source: buildScriptSourceValue(input.scriptKey, input.sourceId),
-      source_name: `${input.scriptName} / ${input.sourceName}`,
+      source_name: scriptSourceDisplayName(input.scriptName, input.sourceName),
       year: item.year || '',
       desc: item.desc || '',
       type_name: item.type_name || '',
@@ -831,7 +843,7 @@ export function normalizeScriptRecommendResults(input: {
         ? item.episodes_titles
         : [],
       source: buildScriptSourceValue(input.scriptKey, sourceId),
-      source_name: `${input.scriptName} / ${sourceName}`,
+      source_name: scriptSourceDisplayName(input.scriptName, sourceName),
       year: item?.year || '',
       desc: item?.desc || '',
       type_name: item?.type_name || '',
@@ -869,7 +881,6 @@ export function normalizeScriptDetailResult(input: {
   const flattenedTitles: string[] = [];
 
   playbacks.forEach((playback: any) => {
-    const playbackSourceName = String(playback.sourceName || input.sourceName);
     const titles = Array.isArray(playback.episodes_titles)
       ? playback.episodes_titles
       : [];
@@ -900,7 +911,7 @@ export function normalizeScriptDetailResult(input: {
         : rawPlayUrl;
 
       flattenedEpisodes.push(playUrl);
-      flattenedTitles.push(`${playbackSourceName} / ${episodeTitle}`);
+      flattenedTitles.push(episodeTitle);
     });
   });
 
@@ -911,7 +922,7 @@ export function normalizeScriptDetailResult(input: {
     episodes: flattenedEpisodes,
     episodes_titles: flattenedTitles,
     source: input.source,
-    source_name: `${input.scriptName} / ${input.sourceName}`,
+    source_name: scriptSourceDisplayName(input.scriptName, input.sourceName),
     class: input.result?.class,
     year: input.result?.year || '',
     desc: input.result?.desc || '',

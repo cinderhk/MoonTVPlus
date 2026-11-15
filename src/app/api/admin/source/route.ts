@@ -3,8 +3,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { getConfig } from '@/lib/config';
+import { getConfig, setCachedConfig } from '@/lib/config';
 import { db } from '@/lib/db';
+import { listSourceScripts } from '@/lib/source-script';
 
 export const runtime = 'nodejs';
 
@@ -23,6 +24,7 @@ type Action =
   | 'toggle_special_source'
   | 'set_special_sources'
   | 'set_client_ad_sources'
+  | 'set_tv_visibility'
   | 'update_weight'
   | 'batch_update_weights';
 
@@ -66,6 +68,7 @@ export async function POST(request: NextRequest) {
       'toggle_special_source',
       'set_special_sources',
       'set_client_ad_sources',
+      'set_tv_visibility',
       'update_weight',
       'batch_update_weights',
     ];
@@ -367,6 +370,25 @@ export async function POST(request: NextRequest) {
         break;
       }
 
+      case 'set_tv_visibility': {
+        const { key, visible } = body;
+        if (typeof key !== 'string' || typeof visible !== 'boolean') {
+          return NextResponse.json({ error: 'TV 显示设置参数格式错误' }, { status: 400 });
+        }
+        const exists = key.startsWith('script:')
+          ? (await listSourceScripts()).some((script) => `script:${script.key}` === key)
+          : adminConfig.SourceConfig.some((source) => source.key === key);
+        if (!exists) {
+          return NextResponse.json({ error: '源不存在' }, { status: 404 });
+        }
+        const hidden = new Set(adminConfig.TvHiddenSourceKeys || []);
+        if (visible) hidden.delete(key);
+        else hidden.add(key);
+        const updated = { ...adminConfig, TvHiddenSourceKeys: Array.from(hidden) };
+        await db.saveAdminConfig(updated);
+        await setCachedConfig(updated);
+        return NextResponse.json({ ok: true }, { headers: { 'Cache-Control': 'no-store' } });
+      }
       case 'set_client_ad_sources': {
         const { keys } = body as { keys?: string[] };
         if (!Array.isArray(keys)) {

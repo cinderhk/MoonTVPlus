@@ -7035,6 +7035,53 @@ const EmbyConfigComponent = ({
   );
 };
 
+const TvSourceVisibilitySwitch = ({ sourceKey, name, hiddenKeys, onSaved }: {
+  sourceKey: string;
+  name: string;
+  hiddenKeys?: string[];
+  onSaved: () => Promise<void>;
+}) => {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const visible = !hiddenKeys?.includes(sourceKey);
+  const toggle = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_tv_visibility', key: sourceKey, visible: !visible }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || '保存 TV 显示设置失败');
+      }
+      await onSaved();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '保存失败，请重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div>
+      <button type='button' role='switch' aria-checked={visible}
+        aria-label={`${name}的TV源显示`} disabled={saving}
+        title='控制此来源是否出现在 TV/投屏选源列表，修改后立即保存'
+        onClick={(event) => { event.stopPropagation(); void toggle(); }}
+        className='inline-flex items-center gap-2 text-xs disabled:opacity-50'>
+        <span className={`relative inline-flex h-5 w-9 rounded-full transition-colors ${visible ? 'bg-green-600' : 'bg-gray-300 dark:bg-gray-600'}`}>
+          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${visible ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+        </span>
+        <span>TV源{visible ? '显示' : '隐藏'}</span>
+      </button>
+      {error && <p role='alert' className='mt-1 text-xs text-red-600'>{error}</p>}
+    </div>
+  );
+};
+
 // 视频源配置组件
 const VideoSourceConfig = ({
   config,
@@ -7885,6 +7932,10 @@ const VideoSourceConfig = ({
           </span>
         </td>
         <td className='px-6 py-4 whitespace-nowrap text-center'>
+          <TvSourceVisibilitySwitch sourceKey={source.key} name={source.name}
+            hiddenKeys={config?.TvHiddenSourceKeys} onSaved={refreshConfig} />
+        </td>
+        <td className='px-6 py-4 whitespace-nowrap text-center'>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -8578,6 +8629,9 @@ const VideoSourceConfig = ({
               </th>
               <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
                 状态
+              </th>
+              <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
+                TV 源显示
               </th>
               <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
                 代理模式
@@ -9510,7 +9564,10 @@ const CategoryConfig = ({
   );
 };
 
-const VideoSourceScriptLab = () => {
+const VideoSourceScriptLab = ({ config, refreshConfig }: {
+  config: AdminConfig | null;
+  refreshConfig: () => Promise<void>;
+}) => {
   const { alertModal, showAlert, hideAlert } = useAlertModal();
   const { isLoading, withLoading } = useLoadingState();
   const [scripts, setScripts] = useState<StandaloneSourceScript[]>([]);
@@ -9976,6 +10033,8 @@ const VideoSourceScriptLab = () => {
                     <div>
                       {new Date(script.updatedAt).toLocaleString('zh-CN')}
                     </div>
+                    <TvSourceVisibilitySwitch sourceKey={`script:${script.key}`} name={script.name}
+                      hiddenKeys={config?.TvHiddenSourceKeys} onSaved={refreshConfig} />
                     <div className='flex items-center justify-between gap-2'>
                       <button
                         type='button'
@@ -19672,7 +19731,7 @@ function AdminPageClient() {
       key: 'sourceScriptLab',
       title: '视频源脚本',
       icon: <Bot size={20} className={navIconClass} />,
-      render: () => <VideoSourceScriptLab />,
+      render: () => <VideoSourceScriptLab config={config} refreshConfig={fetchConfig} />,
     },
     {
       key: 'musicConfig',
@@ -20140,7 +20199,7 @@ function AdminPageClient() {
               isExpanded={expandedTabs.sourceScriptLab}
               onToggle={() => toggleTab('sourceScriptLab')}
             >
-              <VideoSourceScriptLab />
+              <VideoSourceScriptLab config={config} refreshConfig={fetchConfig} />
             </CollapsibleTab>
 
             <CollapsibleTab

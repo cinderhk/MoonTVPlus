@@ -394,6 +394,7 @@ async function getInitConfig(
       ? cfgFile.specialSourceApis
       : [],
     ClientAdSourceApis: [],
+    TvHiddenSourceKeys: [],
   };
 
   // 用户信息已迁移到新版数据库，不再填充 UserConfig.Users
@@ -731,6 +732,9 @@ export function configSelfCheck(adminConfig: AdminConfig): AdminConfig {
   ) {
     adminConfig.ClientAdSourceApis = [];
   }
+  adminConfig.TvHiddenSourceKeys = Array.isArray(adminConfig.TvHiddenSourceKeys)
+    ? Array.from(new Set(adminConfig.TvHiddenSourceKeys.filter((key) => typeof key === 'string' && key.length > 0)))
+    : [];
   adminConfig.LiveRefreshIntervalHours = normalizeLiveRefreshIntervalHours(
     adminConfig.LiveRefreshIntervalHours
   );
