@@ -295,8 +295,15 @@ function resolveM3u8Links(
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
-    // 处理 EXT-X-KEY 标签中的 URI
-    if (line.startsWith('#EXT-X-KEY:')) {
+    // 带 URI 的密钥、初始化分片和子播放列表也需要解析相对路径。
+    const playlistUriTag =
+      line.startsWith('#EXT-X-MEDIA:') ||
+      line.startsWith('#EXT-X-I-FRAME-STREAM-INF:');
+    if (
+      line.startsWith('#EXT-X-KEY:') ||
+      line.startsWith('#EXT-X-SESSION-KEY:') ||
+      line.startsWith('#EXT-X-MAP:') || playlistUriTag
+    ) {
       // 提取 URI 部分
       const uriMatch = line.match(/URI="([^"]+)"/);
       if (uriMatch && uriMatch[1]) {
@@ -311,8 +318,15 @@ function resolveM3u8Links(
           }
         }
 
-        // 直链/全量代理模式：通过代理访问密钥，避免 CORS 问题
-        if (source === 'directplay' || proxySegments) {
+        // 子播放列表继续经过解析接口；密钥和初始化分片仅在全量代理时中转。
+        if (playlistUriTag) {
+          const params = new URLSearchParams({ url: keyUri });
+          if (source) params.set('source', source);
+          if (token) params.set('token', token);
+          if (!adBlockEnabled) params.set('adblock', 'false');
+          if (proxySegments) params.set('proxySegments', 'true');
+          keyUri = `${proxyOrigin}/api/proxy-m3u8?${params.toString()}`;
+        } else if (source === 'directplay' || proxySegments) {
           keyUri = `${proxyOrigin}/api/proxy/vod/segment?url=${encodeURIComponent(keyUri)}&source=${encodeURIComponent(source)}`;
         }
 

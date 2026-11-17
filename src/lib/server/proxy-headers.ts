@@ -1,3 +1,7 @@
+import { isGuaziMediaHost } from '@/lib/guazi-playback';
+
+export { isGuaziMediaHost } from '@/lib/guazi-playback';
+
 /**
  * 代理接口共享工具函数
  * 用于构建标准化的 CORS 响应头，避免各代理路由中的重复代码。
@@ -42,28 +46,10 @@ const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 /**
- * 瓜子影视的 vd.wmvbo.com 对浏览器 UA 和 Referer 很敏感：
- * 带浏览器 UA 或任意 Referer 会返回 2 段试看；原生 App 播放器用的是 Lavf
- * 且不带 Referer。代理这类地址时必须模拟播放器请求，否则代理模式也会拿到
- * 试看（ts 分片甚至会被 302 成一个 m3u8 文本）。
+ * 瓜子 CDN 的播放列表可能按 UA / Referer 返回试看。
+ * 服务器取播放列表时沿用原生播放器的 UA，不附带 Referer / Origin；
+ * 浏览器直连分片时的请求策略在 guazi-playback 中单独处理。
  */
-export function isGuaziMediaHost(input: string | URL): boolean {
-  try {
-    const host = (
-      typeof input === 'string' ? new URL(input) : input
-    ).hostname.toLowerCase();
-    return (
-      host === 'wmvbo.com' ||
-      host.endsWith('.wmvbo.com') ||
-      host === 'eny7kg.com' ||
-      host.endsWith('.eny7kg.com')
-    );
-  } catch {
-    return false;
-  }
-}
-
-/** 代理请求上游媒体时使用的请求头。 */
 export function buildUpstreamMediaHeaders(
   target: string | URL,
   source?: string,

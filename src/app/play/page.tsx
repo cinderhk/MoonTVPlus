@@ -66,6 +66,11 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { getDoubanDetail } from '@/lib/douban.client';
+import {
+  createGuaziMediaRequest,
+  isGuaziMediaHost,
+  isGuaziSource,
+} from '@/lib/guazi-playback';
 import { isEpisodeHiddenByFilter, normalizeEpisodeFilterConfig } from '@/lib/episode-filter';
 import { appendSpecialSourceParam, isSpecialSourceContext } from '@/lib/special-source.client';
 import {
@@ -7583,6 +7588,12 @@ function PlayPageClient() {
           () => customAdFilterCodeRef.current
         );
 
+        const GuaziAdFilteringHlsLoader = createAdFilteringHlsLoader(
+          { DefaultConfig: { loader: HlsModule.FetchLoader } },
+          () => currentSourceRef.current,
+          () => customAdFilterCodeRef.current
+        );
+
         // 创建新的播放器实例
         Artplayer.PLAYBACK_RATE = PLAYBACK_RATE_OPTIONS;
         Artplayer.USE_RAF = true;
@@ -7748,13 +7759,20 @@ function PlayPageClient() {
               const bufferConfig = getBufferConfig(bufferStrategy);
 
               // 选择合适的 Loader
+              // 原生客户端可以自定义请求头；网页只使用浏览器允许的无 Referer 请求。
+              const guaziPlayback =
+                isGuaziSource(currentSourceRef.current) || isGuaziMediaHost(url);
               let loaderClass;
               if (shouldUseCustomLoader) {
                 // 使用自定义广告过滤 Loader
-                loaderClass = CustomHlsJsLoader;
+                loaderClass = guaziPlayback
+                  ? GuaziAdFilteringHlsLoader
+                  : CustomHlsJsLoader;
               } else {
-                // 使用默认 Loader
-                loaderClass = Hls.DefaultConfig.loader;
+                // 瓜子使用 FetchLoader，才能为播放列表、分片和密钥统一禁用 Referer。
+                loaderClass = guaziPlayback
+                  ? HlsModule.FetchLoader
+                  : Hls.DefaultConfig.loader;
               }
 
               const hls = new Hls({
@@ -7771,6 +7789,12 @@ function PlayPageClient() {
 
                 /* 自定义loader */
                 loader: loaderClass as any,
+                ...(guaziPlayback
+                  ? {
+                      fetchSetup: (context: { url: string }, init: RequestInit) =>
+                        createGuaziMediaRequest(context.url, init),
+                    }
+                  : {}),
               });
 
               let measuredLevel = -1;

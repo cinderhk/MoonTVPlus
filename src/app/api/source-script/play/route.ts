@@ -61,7 +61,8 @@ export async function GET(request: NextRequest) {
     const playback = scriptPlaybackResponse(
       result,
       process.env.NEXT_PUBLIC_PROXY_M3U8_TOKEN || '',
-      client
+      client,
+      key
     );
     const headers = { 'Cache-Control': 'no-store' };
     if (format === 'json') {
