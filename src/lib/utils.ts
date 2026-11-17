@@ -706,234 +706,184 @@ export class SpeedTestError extends Error {
  */
 export async function getVideoResolutionFromM3u8(
   m3u8Url: string,
-  timeoutMs = 6000
+  timeoutMs = 6000,
+  signal?: AbortSignal
 ): Promise<{
-  quality: string; // 如720p、1080p等
-  loadSpeed: string; // 自动转换为KB/s或MB/s
-  pingTime: number; // 网络延迟（毫秒）
-  bitrate: string; // 视频码率（如 "2.5 Mbps"）
+  quality: string;
+  loadSpeed: string;
+  pingTime: number;
+  bitrate: string;
 }> {
-  try {
-    const { default: Hls } = await import('hls.js');
+  const abortError = () =>
+    new DOMException('Speed test cancelled', 'AbortError');
+  if (signal?.aborted) throw abortError();
+  const { default: Hls } = await import('hls.js');
+  if (signal?.aborted) throw abortError();
 
-    // 直接使用m3u8 URL作为视频源，避免CORS问题
-    return new Promise((resolve, reject) => {
-      const video = document.createElement('video');
-      video.muted = true;
-      video.preload = 'metadata';
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.preload = 'metadata';
 
-      // 测量网络延迟（ping时间） - 使用m3u8 URL而不是ts文件
-      const pingStart = performance.now();
-      let pingTime = 0;
+    // 测速只缓冲首个媒体分片，避免与正常播放争抢带宽。
+    const hls = new Hls({
+      maxBufferLength: 1,
+      maxMaxBufferLength: 1,
+      maxBufferSize: 1024 * 1024,
+      backBufferLength: 0,
+    });
+    const pingStart = performance.now();
+    let pingTime = 0;
+    let actualLoadSpeed = '未知';
+    let hasSpeedCalculated = false;
+    let hasMetadataLoaded = false;
+    let estimatedBitrate = 0;
+    let fragmentStartTime = 0;
+    let settled = false;
 
-      // 测量ping时间（使用m3u8 URL）
-      fetch(m3u8Url, { method: 'HEAD', mode: 'no-cors' })
-        .then(() => {
-          pingTime = performance.now() - pingStart;
-        })
-        .catch(() => {
-          pingTime = performance.now() - pingStart; // 记录到失败为止的时间
-        });
+    const cleanup = () => {
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      video.onerror = null;
+      video.onloadedmetadata = null;
+      hls.destroy();
+      video.removeAttribute('src');
+      video.load();
+      video.remove();
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => fail(abortError());
+    signal?.addEventListener('abort', onAbort, { once: true });
 
-      // 固定使用hls.js加载
-      const hls = new Hls();
+    const resolveCurrentState = () => {
+      if (settled) return;
+      const width = video.videoWidth;
+      const quality =
+        width >= 3840
+          ? '4K'
+          : width >= 2560
+          ? '2K'
+          : width >= 1920
+          ? '1080p'
+          : width >= 1280
+          ? '720p'
+          : width >= 854
+          ? '480p'
+          : width > 0
+          ? 'SD'
+          : '未知';
+      const bitrate =
+        estimatedBitrate > 0
+          ? estimatedBitrate >= 1000000
+            ? `${(estimatedBitrate / 1000000).toFixed(1)} Mbps`
+            : `${Math.round(estimatedBitrate / 1000)} Kbps`
+          : '未知';
+      cleanup();
+      resolve({
+        quality,
+        loadSpeed: actualLoadSpeed,
+        pingTime: Math.round(pingTime),
+        bitrate,
+      });
+    };
+    const checkAndResolve = () => {
+      if (hasMetadataLoaded && hasSpeedCalculated) resolveCurrentState();
+    };
 
-      let actualLoadSpeed = '未知';
-      let hasSpeedCalculated = false;
-      let hasMetadataLoaded = false;
-      let estimatedBitrate = 0; // 估算的码率（bps）
+    const timeout = setTimeout(() => {
+      if (hasMetadataLoaded || hasSpeedCalculated) resolveCurrentState();
+      else
+        fail(new SpeedTestError('timeout', 'Timeout loading video metadata'));
+    }, timeoutMs);
+    video.onerror = () =>
+      fail(new SpeedTestError('unreachable', 'Failed to load video metadata'));
+    video.onloadedmetadata = () => {
+      hasMetadataLoaded = true;
+      checkAndResolve();
+    };
 
-      // 提取核心返回逻辑供 resolve 和 timeout 共同调用
-      const resolveCurrentState = () => {
-        const width = video.videoWidth;
-        const quality =
-          width >= 3840
-            ? '4K'
-            : width >= 2560
-            ? '2K'
-            : width >= 1920
-            ? '1080p'
-            : width >= 1280
-            ? '720p'
-            : width >= 854
-            ? '480p'
-            : width > 0
-            ? 'SD'
-            : '未知';
-
-        const bitrateStr =
-          estimatedBitrate > 0
-            ? estimatedBitrate >= 1000000
-              ? `${(estimatedBitrate / 1000000).toFixed(1)} Mbps`
-              : `${Math.round(estimatedBitrate / 1000)} Kbps`
-            : '未知';
-
-        hls.destroy();
-        video.remove();
-
+    // 复用播放列表的首包时间，不再额外发送 HEAD 请求。
+    hls.on(Hls.Events.MANIFEST_LOADED, (_event: any, data: any) => {
+      const loading = data?.stats?.loading;
+      pingTime =
+        loading?.first > loading?.start
+          ? loading.first - loading.start
+          : performance.now() - pingStart;
+    });
+    hls.on(Hls.Events.FRAG_LOADING, () => {
+      fragmentStartTime = performance.now();
+    });
+    hls.on(Hls.Events.FRAG_LOADED, (_event: any, data: any) => {
+      if (
+        settled ||
+        data?.frag?.type !== 'main' ||
+        data.frag.sn === 'initSegment' ||
+        hasSpeedCalculated
+      )
+        return;
+      const loading = data.stats?.loading;
+      const loadTime =
+        loading?.end > loading?.start
+          ? loading.end - loading.start
+          : performance.now() - fragmentStartTime;
+      const size = data.payload?.byteLength || 0;
+      if (loadTime <= 0 || size <= 0) return;
+      const speedKBps = size / 1024 / (loadTime / 1000);
+      actualLoadSpeed =
+        speedKBps >= 1024
+          ? `${(speedKBps / 1024).toFixed(1)} MB/s`
+          : `${speedKBps.toFixed(1)} KB/s`;
+      hasSpeedCalculated = true;
+      if (data.frag.duration > 0)
+        estimatedBitrate = Math.round((size * 8) / data.frag.duration);
+      checkAndResolve();
+    });
+    hls.on(Hls.Events.FRAG_BUFFERED, (_event: any, data: any) => {
+      if (
+        !settled &&
+        data?.frag?.type === 'main' &&
+        data.frag.sn !== 'initSegment'
+      )
+        hls.stopLoad();
+    });
+    hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
+      if (settled || !data.fatal) return;
+      const statusCode = data.response?.code || data.response?.status;
+      if (
+        statusCode === 415 &&
+        (m3u8Url.includes('/api/proxy-m3u8') ||
+          m3u8Url.includes('/api/proxy/vod/m3u8'))
+      ) {
+        cleanup();
         resolve({
-          quality,
-          loadSpeed: actualLoadSpeed,
-          pingTime: Math.round(pingTime),
-          bitrate: bitrateStr,
+          quality: '原生画质',
+          loadSpeed: '直连',
+          pingTime: 10,
+          bitrate: '未知',
         });
-      };
+        return;
+      }
+      const details = typeof data.details === 'string' ? data.details : '';
+      fail(
+        new SpeedTestError(
+          details.toLowerCase().includes('timeout') ? 'timeout' : 'unreachable',
+          `HLS播放失败: ${data.type}`
+        )
+      );
+    });
 
-      // 设置超时处理 - 如果部分数据已拿到，则宽容返回
-      const timeout = setTimeout(() => {
-        if (hasMetadataLoaded || hasSpeedCalculated) {
-          resolveCurrentState();
-        } else {
-          hls.destroy();
-          video.remove();
-          reject(
-            new SpeedTestError('timeout', 'Timeout loading video metadata')
-          );
-        }
-      }, timeoutMs);
-
-      video.onerror = () => {
-        clearTimeout(timeout);
-        hls.destroy();
-        video.remove();
-        reject(
-          new SpeedTestError('unreachable', 'Failed to load video metadata')
-        );
-      };
-
-      let fragmentStartTime = 0;
-
-      // 检查是否可以相互满足要求
-      const checkAndResolve = () => {
-        if (
-          hasMetadataLoaded &&
-          (hasSpeedCalculated || actualLoadSpeed !== '未知')
-        ) {
-          clearTimeout(timeout);
-          resolveCurrentState();
-        }
-      };
-
-      // 监听片段加载开始
-      hls.on(Hls.Events.FRAG_LOADING, () => {
-        fragmentStartTime = performance.now();
-      });
-
-      // 监听片段加载完成，只需首个分片即可计算速度
-      hls.on(Hls.Events.FRAG_LOADED, (event: any, data: any) => {
-        if (
-          fragmentStartTime > 0 &&
-          data &&
-          data.payload &&
-          !hasSpeedCalculated
-        ) {
-          const loadTime = performance.now() - fragmentStartTime;
-          const size = data.payload.byteLength || 0;
-
-          if (loadTime > 0 && size > 0) {
-            const speedKBps = size / 1024 / (loadTime / 1000);
-
-            // 立即计算速度，无需等待更多分片
-            const avgSpeedKBps = speedKBps;
-
-            if (avgSpeedKBps >= 1024) {
-              actualLoadSpeed = `${(avgSpeedKBps / 1024).toFixed(1)} MB/s`;
-            } else {
-              actualLoadSpeed = `${avgSpeedKBps.toFixed(1)} KB/s`;
-            }
-            hasSpeedCalculated = true;
-
-            // 从分片估算码率
-            if (data.frag && data.frag.duration > 0) {
-              const fragmentDuration = data.frag.duration; // 分片时长（秒）
-              const fragmentSize = size; // 分片大小（字节）
-
-              // 码率 = (分片大小 × 8 bits) / 分片时长
-              estimatedBitrate = Math.round(
-                (fragmentSize * 8) / fragmentDuration
-              );
-
-              console.log(
-                `[测速] 估算码率: ${(estimatedBitrate / 1000000).toFixed(
-                  2
-                )} Mbps (分片: ${(fragmentSize / 1024 / 1024).toFixed(
-                  2
-                )} MB, 时长: ${fragmentDuration.toFixed(1)}s)`
-              );
-            }
-
-            checkAndResolve(); // 尝试返回结果
-          }
-        }
-      });
-
-      // 为分片请求添加时间戳参数破除浏览器缓存
-      hls.config.xhrSetup = function (xhr: XMLHttpRequest, url: string) {
-        const urlWithTimestamp = url.includes('?')
-          ? `${url}&_t=${Date.now()}`
-          : `${url}?_t=${Date.now()}`;
-        xhr.open('GET', urlWithTimestamp, true);
-      };
-
+    try {
       hls.loadSource(m3u8Url);
       hls.attachMedia(video);
-
-      // 监听hls.js错误
-      hls.on(Hls.Events.ERROR, (event: any, data: any) => {
-        console.error('HLS错误:', data);
-        if (data.fatal) {
-          const statusCode = data.response?.code || data.response?.status;
-          // 防止 415 代理兜底熔断导致正常的二进制源在优选逻辑中被剔除
-          if (
-            statusCode === 415 &&
-            (m3u8Url.includes('/api/proxy-m3u8') ||
-              m3u8Url.includes('/api/proxy/vod/m3u8'))
-          ) {
-            console.log(
-              '[测速] 测速通道嗅探到这是底层的媒体流文件，免测速通过'
-            );
-            clearTimeout(timeout);
-            hls.destroy();
-            video.remove();
-            resolve({
-              quality: '原生画质',
-              loadSpeed: '直连',
-              pingTime: 10,
-              bitrate: '未知',
-            });
-            return;
-          }
-
-          clearTimeout(timeout);
-          hls.destroy();
-          video.remove();
-          // HLS 的 *TimeOut 类 details（manifestLoadTimeOut 等）归为超时，
-          // 其余致命错误（网络不可达、404、解析失败）归为无法访问
-          const details =
-            typeof data.details === 'string' ? data.details : '';
-          const isTimeout = details.toLowerCase().includes('timeout');
-          reject(
-            new SpeedTestError(
-              isTimeout ? 'timeout' : 'unreachable',
-              `HLS播放失败: ${data.type}`
-            )
-          );
-        }
-      });
-
-      // 监听视频元数据加载完成
-      video.onloadedmetadata = () => {
-        hasMetadataLoaded = true;
-        checkAndResolve(); // 尝试返回结果
-      };
-    });
-  } catch (error) {
-    throw new Error(
-      `Error getting video resolution: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
 }
 
 export function cleanHtmlTags(text: string): string {

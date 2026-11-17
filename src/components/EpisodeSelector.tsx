@@ -506,6 +506,7 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
   // 使用 ref 来避免闭包问题
   const attemptedSourcesRef = useRef<Set<string>>(new Set());
+  const probeControllerRef = useRef<AbortController | null>(null);
   const videoInfoMapRef = useRef<Map<string, VideoInfo>>(new Map());
 
   // 同步状态到 ref
@@ -659,7 +660,11 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   }, [episodeGroupsAsc, totalEpisodes, value]);
 
   // 获取视频信息的函数 - 移除 attemptedSources 依赖避免不必要的重新创建
-  const getVideoInfo = useCallback(async (source: SearchResult) => {
+  const getVideoInfo = useCallback(async (
+    source: SearchResult,
+    signal = probeControllerRef.current?.signal
+  ) => {
+    if (signal?.aborted) return;
     const sourceKey = `${source.source}-${source.id}`;
 
     // 使用 ref 获取最新的状态，避免闭包问题
@@ -674,13 +679,28 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
     const episodeUrl =
       source.episodes.length > 1 ? source.episodes[1] : source.episodes[0];
 
-    // 标记为已尝试
+    // 立即锁定该源，防止异步状态更新前重复发起测速。
+    attemptedSourcesRef.current.add(sourceKey);
     setAttemptedSources((prev) => new Set(prev).add(sourceKey));
 
+    const onAbort = () => {
+      attemptedSourcesRef.current.delete(sourceKey);
+      setAttemptedSources((prev) => {
+        const next = new Set(prev);
+        next.delete(sourceKey);
+        return next;
+      });
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const info = await getVideoResolutionFromM3u8(episodeUrl, speedTestTimeout);
-      setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
+      const info = await getVideoResolutionFromM3u8(
+        episodeUrl, speedTestTimeout, signal
+      );
+      if (!signal?.aborted) {
+        setVideoInfoMap((prev) => new Map(prev).set(sourceKey, info));
+      }
     } catch (error) {
+      if (signal?.aborted) return;
       // 失败时保存错误状态，并区分超时与无法访问
       const errorType: SpeedTestErrorType =
         error instanceof SpeedTestError ? error.type : 'unreachable';
@@ -694,6 +714,8 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
           errorType,
         })
       );
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
   }, [speedTestTimeout]);
 
@@ -701,6 +723,8 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
   const retestAllSources = useCallback(async () => {
     if (!availableSources || availableSources.length === 0) return;
 
+    const signal = probeControllerRef.current?.signal;
+    if (signal?.aborted) return;
     setIsRetestingAll(true);
 
     // 清空之前的测速结果
@@ -717,11 +741,12 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
       return true;
     });
 
-    // 分批测速，每批最多5个
-    const batchSize = 5;
+    // 限制后台测速并发，让带宽优先用于正在播放的视频。
+    const batchSize = 2;
     for (let i = 0; i < sourcesToTest.length; i += batchSize) {
+      if (signal?.aborted) return;
       const batch = sourcesToTest.slice(i, i + batchSize);
-      await Promise.all(batch.map(source => getVideoInfo(source)));
+      await Promise.all(batch.map(source => getVideoInfo(source, signal)));
     }
 
     setIsRetestingAll(false);
@@ -760,6 +785,11 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
 
   // 当切换到换源tab并且有源数据时，异步获取视频信息 - 移除 attemptedSources 依赖避免循环触发
   useEffect(() => {
+    const controller = new AbortController();
+    probeControllerRef.current = controller;
+    const { signal } = controller;
+    setIsInitialTesting(false);
+    setIsRetestingAll(false);
     const fetchVideoInfosInBatches = async () => {
       if (
         !optimizationEnabled || // 若关闭测速则直接退出
@@ -783,63 +813,23 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
       // 标记开始初始测速
       setIsInitialTesting(true);
 
-      const batchSize = Math.ceil(pendingSources.length / 2);
+      const batchSize = 2;
 
       for (let start = 0; start < pendingSources.length; start += batchSize) {
+        if (signal.aborted) return;
         const batch = pendingSources.slice(start, start + batchSize);
-        await Promise.all(batch.map(getVideoInfo));
+        await Promise.all(batch.map(source => getVideoInfo(source, signal)));
       }
 
-      // 初始测速完成后，标记为已完成
-      setIsInitialTesting(false);
-      if (!initialTestingCompleted) {
+      if (!signal.aborted) {
+        setIsInitialTesting(false);
         setInitialTestingCompleted(true);
       }
     };
 
-    fetchVideoInfosInBatches();
-    // 依赖项保持与之前一致
-  }, [activeTab, availableSources, getVideoInfo, optimizationEnabled, initialTestingCompleted, currentSource]);
-
-  // 监听后台加载完成，触发自动测速
-  const prevBackgroundLoadingRef = useRef<boolean>(false);
-  useEffect(() => {
-    // 当后台加载从 true 变为 false 时（即加载完成）
-    if (prevBackgroundLoadingRef.current && !backgroundSourcesLoading) {
-      // 如果当前选项卡在换源位置，触发测速
-      if (activeTab === 'sources' && optimizationEnabled) {
-        // 筛选出尚未测速的播放源，并排除不需要测速的源（openlist/emby/xiaoya）
-        const pendingSources = availableSources.filter((source) => {
-          const sourceKey = `${source.source}-${source.id}`;
-          // 跳过已测速的源
-          if (attemptedSourcesRef.current.has(sourceKey)) return false;
-          // 跳过不需要测速的源
-          if (source.source === 'openlist' || source.source === 'emby' || source.source.startsWith('emby_') || source.source === 'xiaoya') return false;
-          return true;
-        });
-
-        if (pendingSources.length > 0) {
-          const batchSize = Math.ceil(pendingSources.length / 2);
-
-          const fetchInBatches = async () => {
-            for (let start = 0; start < pendingSources.length; start += batchSize) {
-              const batch = pendingSources.slice(start, start + batchSize);
-              await Promise.all(batch.map(getVideoInfo));
-            }
-
-            if (!initialTestingCompleted) {
-              setInitialTestingCompleted(true);
-            }
-          };
-
-          fetchInBatches();
-        }
-      }
-    }
-
-    // 更新前一次的加载状态
-    prevBackgroundLoadingRef.current = backgroundSourcesLoading;
-  }, [backgroundSourcesLoading, activeTab, availableSources, getVideoInfo, optimizationEnabled, initialTestingCompleted, currentSource]);
+    void fetchVideoInfosInBatches();
+    return () => controller.abort();
+  }, [activeTab, availableSources, getVideoInfo, optimizationEnabled, currentSource]);
 
   // 根据 descending 状态决定分组标签的排序和内容
   const categories = useMemo(() => {

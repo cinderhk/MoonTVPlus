@@ -9,17 +9,31 @@
  */
 export function buildProxyStreamHeaders(
   contentType: string,
-  contentLength?: string | null
+  contentLength?: string | null,
+  upstream?: Headers
 ): Headers {
   const headers = new Headers();
   headers.set('Content-Type', contentType);
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type, Range, Origin, Accept');
+  headers.set(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Range, Origin, Accept'
+  );
   headers.set('Accept-Ranges', 'bytes');
   headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
+  headers.set('X-Accel-Buffering', 'no');
   if (contentLength) {
     headers.set('Content-Length', contentLength);
+  }
+  for (const name of [
+    'Content-Range',
+    'Accept-Ranges',
+    'ETag',
+    'Last-Modified',
+  ]) {
+    const value = upstream?.get(name);
+    if (value) headers.set(name, value);
   }
   return headers;
 }
@@ -35,7 +49,9 @@ const BROWSER_UA =
  */
 export function isGuaziMediaHost(input: string | URL): boolean {
   try {
-    const host = (typeof input === 'string' ? new URL(input) : input).hostname.toLowerCase();
+    const host = (
+      typeof input === 'string' ? new URL(input) : input
+    ).hostname.toLowerCase();
     return (
       host === 'wmvbo.com' ||
       host.endsWith('.wmvbo.com') ||
@@ -50,24 +66,30 @@ export function isGuaziMediaHost(input: string | URL): boolean {
 /** 代理请求上游媒体时使用的请求头。 */
 export function buildUpstreamMediaHeaders(
   target: string | URL,
-  source?: string
+  source?: string,
+  clientHeaders?: Headers
 ): Record<string, string> {
   const url = typeof target === 'string' ? new URL(target) : target;
   // 只针对瓜子地址 / 瓜子源生效，避免影响其他 directplay 直链源。
-  if (isGuaziMediaHost(url) || (source && source.startsWith('guazi'))) {
-    return {
-      'User-Agent': 'Lavf/57.83.100',
-      Accept: '*/*',
-    };
+  const headers: Record<string, string> =
+    isGuaziMediaHost(url) || (source && source.startsWith('guazi'))
+      ? {
+          'User-Agent': 'Lavf/57.83.100',
+          Accept: '*/*',
+          'Accept-Encoding': 'identity',
+        }
+      : {
+          'User-Agent': BROWSER_UA,
+          Accept: '*/*',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'identity',
+          Referer: `${url.protocol}//${url.host}/`,
+        };
+  for (const name of ['Range', 'If-Range']) {
+    const value = clientHeaders?.get(name);
+    if (value) headers[name] = value;
   }
-
-  return {
-    'User-Agent': BROWSER_UA,
-    Accept: '*/*',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    Referer: `${url.protocol}//${url.host}/`,
-  };
+  return headers;
 }
 
 /**
@@ -78,7 +100,10 @@ export function buildProxyM3u8Headers(contentType?: string): Headers {
   headers.set('Content-Type', contentType || 'application/vnd.apple.mpegurl');
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'Content-Type, Range, Origin, Accept');
+  headers.set(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Range, Origin, Accept'
+  );
   headers.set('Cache-Control', 'no-cache');
   headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
   return headers;

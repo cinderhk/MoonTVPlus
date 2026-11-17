@@ -3,11 +3,11 @@
 import { NextResponse } from "next/server";
 
 import { getConfig } from "@/lib/config";
-import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 import {
   buildProxyStreamHeaders,
   buildUpstreamMediaHeaders,
 } from '@/lib/server/proxy-headers';
+import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 
 export const runtime = 'nodejs';
 
@@ -37,7 +37,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const decodedUrl = decodeURIComponent(url);
+    const decodedUrl = url;
 
     // 安全校验：防 SSRF 拦截请求内网或非法 URL
     const isSafeUrl = await validateProxyUrlServerSide(decodedUrl);
@@ -46,10 +46,13 @@ export async function GET(request: Request) {
     }
 
     const response = await fetch(decodedUrl, {
+      cache: 'no-store',
+      signal: request.signal,
       headers: buildUpstreamMediaHeaders(decodedUrl, source),
     });
 
     if (!response.ok) {
+      void response.body?.cancel().catch(() => { /* The connection may already be closed. */ });
       return NextResponse.json({ error: 'Failed to fetch key' }, { status: 500 });
     }
 

@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { getConfig } from "@/lib/config";
 import { getBaseUrl, resolveUrl } from "@/lib/live";
 import { fetchLive, toWebStream } from "@/lib/live-http";
+import { buildProxyStreamHeaders } from "@/lib/server/proxy-headers";
 
 export const runtime = 'nodejs';
 
@@ -28,10 +29,19 @@ export async function GET(request: Request) {
   let responseUsed = false;
 
   try {
-    const decodedUrl = decodeURIComponent(url);
+    const decodedUrl = url;
 
     response = await fetchLive(decodedUrl, ua, {
+      cache: 'no-store',
+      signal: request.signal,
       redirect: 'follow',
+      headers: {
+        'Accept-Encoding': 'identity',
+        ...Object.fromEntries(['Range', 'If-Range'].flatMap(name => {
+          const value = request.headers.get(name);
+          return value ? [[name, value]] : [];
+        })),
+      },
     });
 
     if (!response.ok) {
@@ -62,17 +72,18 @@ export async function GET(request: Request) {
       return new Response(modifiedContent, { headers });
     }
     // just proxy
-    const headers = new Headers();
-    headers.set('Content-Type', response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl');
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    headers.set('Access-Control-Allow-Headers', 'Content-Type, Range, Origin, Accept');
+    const headers = buildProxyStreamHeaders(
+      response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl',
+      response.headers.get('Content-Length'),
+      response.headers
+    );
     headers.set('Cache-Control', 'no-cache');
     headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
 
     // 直接返回视频流
+    responseUsed = true;
     return new Response(toWebStream(response.body), {
-      status: 200,
+      status: response.status,
       headers,
     });
   } catch (error) {
@@ -81,7 +92,7 @@ export async function GET(request: Request) {
     // 确保 response 被正确关闭以释放资源
     if (response && !responseUsed) {
       try {
-        toWebStream(response.body)?.cancel();
+        void toWebStream(response.body)?.cancel().catch(() => { /* The connection may already be closed. */ });
       } catch (error) {
         // 忽略关闭时的错误
         console.warn('Failed to close response body:', error);

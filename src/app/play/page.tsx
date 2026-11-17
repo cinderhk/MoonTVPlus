@@ -2405,6 +2405,7 @@ function PlayPageClient() {
   >(new Map());
 
   // 当前源的视频信息（用于标题旁边显示）
+  const currentFragmentBitrateRef = useRef(0);
   const [currentSourceVideoInfo, setCurrentSourceVideoInfo] = useState<{
     quality: string;
     loadSpeed: string;
@@ -3180,54 +3181,40 @@ function PlayPageClient() {
     return 'unknown';
   };
 
-  // 获取当前源的视频信息（分辨率和码率）
-  const fetchCurrentSourceVideoInfo = async () => {
-    if (!detail || !detail.episodes || detail.episodes.length === 0) {
-      return;
-    }
-
-    // 获取当前集数的播放地址
-    let episodeUrl = detail.episodes[currentEpisodeIndex];
-    if (!episodeUrl) {
-      return;
-    }
-
-    // openlist 的 lazy 播放地址或已确认的单文件直链（如 mkv），解析前无法探测分辨率（内部 hls.js XHR 还会触发 CORS 误报），跳过
-    if (
-      episodeUrl.startsWith('/api/openlist/play') ||
-      videoMediaTypeRef.current === 'file'
-    ) {
-      setCurrentSourceVideoInfo(null);
-      return;
-    }
-
-    // 简单的正则或者后缀判断，如果明确不是 m3u8 (比如 mp4)，则不走 m3u8 代理
-    const isM3u8 = episodeUrl.toLowerCase().includes('.m3u') || !episodeUrl.toLowerCase().match(/\.(mp4|flv|webm|mkv|avi|mov)(\?.*)?$/);
-
-    if (currentSource === 'directplay' && isM3u8) {
-      // 仅当 localStorage 记忆了该域名需要代理时才走代理
-      if (isDirectplayDomainProxied(episodeUrl)) {
-        const tokenParam = proxyToken ? `&token=${encodeURIComponent(proxyToken)}` : '';
-        episodeUrl = `/api/proxy-m3u8?url=${encodeURIComponent(episodeUrl)}&source=directplay${tokenParam}`;
-      } else {
-        // 直链模式且未走代理：跳过 HLS.js 探测。
-        // getVideoResolutionFromM3u8 内部使用 HLS.js (XMLHttpRequest) 加载，
-        // 而 XHR 受 CORS 限制，探测必然失败。实际播放器通过 <video src> 加载不受 CORS 影响。
-        console.log('[视频信息] 直链直连模式，跳过分辨率探测（避免 CORS 误报）');
-        setCurrentSourceVideoInfo(null);
-        return;
-      }
-    } else if (sourceProxyMode && !currentSource.startsWith('script:') && isM3u8) {
-      episodeUrl = `/api/proxy/vod/m3u8?url=${encodeURIComponent(episodeUrl)}&source=${encodeURIComponent(currentSource)}`;
-    }
-
-    try {
-      const info = await getVideoResolutionFromM3u8(episodeUrl, 4000);
-      setCurrentSourceVideoInfo(info);
-    } catch (error) {
-      console.error('获取视频信息失败:', error);
-      setCurrentSourceVideoInfo(null);
-    }
+  // 复用当前播放器的信息，避免每次播放或换集都新建隐藏播放器重复下载。
+  const fetchCurrentSourceVideoInfo = () => {
+    const video = artPlayerRef.current?.video;
+    if (!video?.videoWidth) return;
+    const hls = video.hls;
+    const bitrate =
+      currentFragmentBitrateRef.current ||
+      hls?.levels?.[hls.currentLevel]?.bitrate ||
+      0;
+    const width = video.videoWidth;
+    const quality =
+      width >= 3840
+        ? '4K'
+        : width >= 2560
+        ? '2K'
+        : width >= 1920
+        ? '1080p'
+        : width >= 1280
+        ? '720p'
+        : width >= 854
+        ? '480p'
+        : 'SD';
+    const bitrateText =
+      bitrate > 0
+        ? bitrate >= 1000000
+          ? `${(bitrate / 1000000).toFixed(1)} Mbps`
+          : `${Math.round(bitrate / 1000)} Kbps`
+        : '未知';
+    setCurrentSourceVideoInfo({
+      quality,
+      bitrate: bitrateText,
+      loadSpeed: '未知',
+      pingTime: 0,
+    });
   };
 
   // 播放源优选函数
@@ -3324,6 +3311,8 @@ function PlayPageClient() {
       return resultsWithScore[0].source;
     };
 
+    const probeController = new AbortController();
+
     const testSingleSource = async (
       source: SearchResult
     ): Promise<MaybeSourceTestResult> => {
@@ -3348,7 +3337,9 @@ function PlayPageClient() {
           episodeUrl = `/api/proxy/vod/m3u8?url=${encodeURIComponent(episodeUrl)}&source=${encodeURIComponent(source.source)}`;
         }
 
-        const testResult = await getVideoResolutionFromM3u8(episodeUrl);
+        const testResult = await getVideoResolutionFromM3u8(
+          episodeUrl, 6000, probeController.signal
+        );
 
         return {
           source,
@@ -3359,7 +3350,7 @@ function PlayPageClient() {
       }
     };
 
-    const maxConcurrency = Math.ceil(sources.length / 2);
+    const maxConcurrency = Math.min(2, sources.length);
 
     const runAllWithSameConcurrency = async (): Promise<MaybeSourceTestResult[]> => {
       const results: MaybeSourceTestResult[] = new Array(sources.length);
@@ -3446,6 +3437,7 @@ function PlayPageClient() {
       maybeResolve();
     });
 
+    probeController.abort();
     return finalizeSelection(quickResults);
   };
 
@@ -5901,11 +5893,9 @@ function PlayPageClient() {
     }
   }, [searchParams, currentSource, currentId, availableSources, currentEpisodeIndex]);
 
-  // 监听 detail 和 currentEpisodeIndex 变化，自动获取视频信息
   useEffect(() => {
-    if (detail && detail.episodes && detail.episodes.length > 0) {
-      fetchCurrentSourceVideoInfo();
-    }
+    currentFragmentBitrateRef.current = 0;
+    setCurrentSourceVideoInfo(null);
   }, [detail, currentEpisodeIndex]);
 
   // 监听 detail 和 currentEpisodeIndex 变化，动态更新字幕
@@ -7783,6 +7773,27 @@ function PlayPageClient() {
                 loader: loaderClass as any,
               });
 
+              let measuredLevel = -1;
+              hls.on(Hls.Events.FRAG_LOADED, (_event: any, data: any) => {
+                const fragment = data?.frag;
+                if (
+                  !fragment ||
+                  fragment.type !== 'main' ||
+                  fragment.sn === 'initSegment' ||
+                  fragment.duration <= 0
+                )
+                  return;
+                if (
+                  measuredLevel === fragment.level &&
+                  currentFragmentBitrateRef.current > 0
+                )
+                  return;
+                measuredLevel = fragment.level;
+                const bytes = data.payload?.byteLength || data.stats?.total || 0;
+                currentFragmentBitrateRef.current = (bytes * 8) / fragment.duration;
+                fetchCurrentSourceVideoInfo();
+              });
+
               const kickStartHlsPlayback = () => {
                 try {
                   hls.startLoad(-1);
@@ -8885,6 +8896,7 @@ function PlayPageClient() {
         });
 
         artPlayerRef.current.on('flip', syncAnime4KCanvasFlip);
+        artPlayerRef.current.on('video:loadedmetadata', fetchCurrentSourceVideoInfo);
 
         // 监听播放器事件
         artPlayerRef.current.on('ready', async () => {

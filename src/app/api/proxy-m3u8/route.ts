@@ -79,10 +79,13 @@ export async function GET(request: NextRequest) {
     // 获取原始 m3u8 内容
     const m3u8UrlObj = new URL(m3u8Url);
     const response = await fetch(m3u8Url, {
-      headers: buildUpstreamMediaHeaders(m3u8UrlObj, source),
+      cache: 'no-store',
+      signal: request.signal,
+      headers: buildUpstreamMediaHeaders(m3u8UrlObj, source, request.headers),
     });
 
     if (!response.ok) {
+      void response.body?.cancel().catch(() => { /* The connection may already be closed. */ });
       return NextResponse.json(
         { error: '获取 m3u8 文件失败' },
         { status: response.status }
@@ -113,6 +116,7 @@ export async function GET(request: NextRequest) {
         // 构造一个新的 Response 对象用于二进制直接透传，确保包含了支持跨域的 header
         const newHeaders = new Headers(response.headers);
         newHeaders.set('Access-Control-Allow-Origin', '*');
+        newHeaders.set('X-Accel-Buffering', 'no');
 
         // 如果源站返回了跨站相关的禁止头，尽量移除它们
         newHeaders.delete('X-Frame-Options');
@@ -125,6 +129,7 @@ export async function GET(request: NextRequest) {
         });
       }
 
+      void response.body?.cancel().catch(() => { /* The connection may already be closed. */ });
       console.warn(`[Proxy-M3U8] 拦截到非文本媒体流 (Content-Type: ${contentType}), 拒绝按文本解析, URL: ${m3u8Url}`);
       return NextResponse.json(
         {
@@ -386,6 +391,6 @@ async function hasM3u8Header(response: Response): Promise<boolean> {
     return /^#EXTM3U(?:\s|$)/.test(prefix.trimStart());
   } finally {
     // Awaiting a cloned stream cancellation can wait for the original stream.
-    void reader.cancel().catch(() => {});
+    void reader.cancel().catch(() => { /* The connection may already be closed. */ });
   }
 }

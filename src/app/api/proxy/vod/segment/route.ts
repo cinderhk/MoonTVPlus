@@ -3,11 +3,11 @@
 import { NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
-import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 import {
   buildProxyStreamHeaders,
   buildUpstreamMediaHeaders,
 } from '@/lib/server/proxy-headers';
+import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 
 export const runtime = 'nodejs';
 
@@ -42,122 +42,32 @@ export async function GET(request: Request) {
     }
   }
 
-  let response: Response | null = null;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-
   try {
-    const decodedUrl = decodeURIComponent(url);
-
-    // 安全校验：防 SSRF 拦截请求内网或非法 URL (强制检查所有代理请求)
-    const isSafeUrl = await validateProxyUrlServerSide(decodedUrl);
-    if (!isSafeUrl) {
+    // URLSearchParams already decoded the outer query parameter. Preserve
+    // escaped CDN paths and signatures rather than decoding a second time.
+    const decodedUrl = url;
+    if (!await validateProxyUrlServerSide(decodedUrl)) {
       return NextResponse.json({ error: 'Proxy request to local or invalid network is forbidden' }, { status: 403 });
     }
 
-    response = await fetch(decodedUrl, {
-      headers: buildUpstreamMediaHeaders(decodedUrl, source),
+    const response = await fetch(decodedUrl, {
+      cache: 'no-store',
+      signal: request.signal,
+      headers: buildUpstreamMediaHeaders(decodedUrl, source, request.headers),
     });
     if (!response.ok) {
-      return NextResponse.json({ error: 'Failed to fetch segment' }, { status: 500 });
+      void response.body?.cancel().catch(() => { /* The connection may already be closed. */ });
+      return NextResponse.json({ error: 'Failed to fetch segment' }, { status: response.status });
     }
-
     const headers = buildProxyStreamHeaders(
       response.headers.get('Content-Type') || 'video/mp2t',
-      response.headers.get('content-length')
+      response.headers.get('Content-Length'),
+      response.headers
     );
-
-    // 使用流式传输，避免占用内存
-    let isCancelled = false;
-
-    const stream = new ReadableStream({
-      start(controller) {
-        if (!response?.body) {
-          controller.close();
-          return;
-        }
-
-        reader = response.body.getReader();
-
-        function pump() {
-          if (isCancelled || !reader) {
-            return;
-          }
-
-          reader.read().then(({ done, value }) => {
-            if (isCancelled) {
-              return;
-            }
-
-            if (done) {
-              controller.close();
-              cleanup();
-              return;
-            }
-
-            controller.enqueue(value);
-            pump();
-          }).catch((error) => {
-            if (!isCancelled) {
-              controller.error(error);
-              cleanup();
-            }
-          });
-        }
-
-        function cleanup() {
-          if (reader) {
-            try {
-              reader.releaseLock();
-            } catch (e) {
-              // reader 可能已经被释放，忽略错误
-            }
-            reader = null;
-          }
-        }
-
-        pump();
-      },
-      cancel() {
-        isCancelled = true;
-        // 当流被取消时，确保释放所有资源
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch (e) {
-            // reader 可能已经被释放，忽略错误
-          }
-          reader = null;
-        }
-
-        if (response?.body) {
-          try {
-            response.body.cancel();
-          } catch (e) {
-            // 忽略取消时的错误
-          }
-        }
-      }
-    });
-
-    return new Response(stream, { headers });
-  } catch (error) {
-    // 确保在错误情况下也释放资源
-    if (reader) {
-      try {
-        (reader as ReadableStreamDefaultReader<Uint8Array>).releaseLock();
-      } catch (e) {
-        // 忽略错误
-      }
-    }
-
-    if (response?.body) {
-      try {
-        response.body.cancel();
-      } catch (e) {
-        // 忽略错误
-      }
-    }
-
-    return NextResponse.json({ error: 'Failed to fetch segment' }, { status: 500 });
+    // Passing the body through preserves backpressure and propagates consumer
+    // cancellation upstream. Eager pumping downloads abandoned seeks in full.
+    return new Response(response.body, { status: response.status, headers });
+  } catch {
+    return NextResponse.json({ error: 'Failed to fetch segment' }, { status: 502 });
   }
 }

@@ -4,12 +4,12 @@ import { NextResponse } from "next/server";
 
 import { getConfig } from "@/lib/config";
 import { getBaseUrl, resolveUrl } from "@/lib/live";
-import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 import {
   buildProxyM3u8Headers,
   buildProxyStreamHeaders,
   buildUpstreamMediaHeaders,
 } from '@/lib/server/proxy-headers';
+import { validateProxyUrlServerSide } from '@/lib/server/ssrf';
 
 export const runtime = 'nodejs';
 
@@ -42,7 +42,8 @@ export async function GET(request: Request) {
   let responseUsed = false;
 
   try {
-    const decodedUrl = decodeURIComponent(url);
+    // URLSearchParams already decoded the outer query parameter.
+    const decodedUrl = url;
 
     // 安全校验：防 SSRF 拦截请求内网或非法 URL
     const isSafeUrl = await validateProxyUrlServerSide(decodedUrl);
@@ -51,10 +52,11 @@ export async function GET(request: Request) {
     }
 
     response = await fetch(decodedUrl, {
-      cache: 'no-cache',
+      cache: 'no-store',
+      signal: request.signal,
       redirect: 'follow',
       credentials: 'same-origin',
-      headers: buildUpstreamMediaHeaders(decodedUrl, source),
+      headers: buildUpstreamMediaHeaders(decodedUrl, source, request.headers),
     });
 
     if (!response.ok) {
@@ -80,13 +82,16 @@ export async function GET(request: Request) {
     }
     // just proxy
     const headers = buildProxyStreamHeaders(
-      response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl'
+      response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl',
+      response.headers.get('Content-Length'),
+      response.headers
     );
     headers.set('Cache-Control', 'no-cache');
 
     // 直接返回视频流
+    responseUsed = true;
     return new Response(response.body, {
-      status: 200,
+      status: response.status,
       headers,
     });
   } catch (error) {
@@ -95,7 +100,7 @@ export async function GET(request: Request) {
     // 确保 response 被正确关闭以释放资源
     if (response && !responseUsed) {
       try {
-        response.body?.cancel();
+        void response.body?.cancel().catch(() => { /* The connection may already be closed. */ });
       } catch (error) {
         // 忽略关闭时的错误
         console.warn('Failed to close response body:', error);
