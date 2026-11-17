@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { scriptPlaybackResponse } from '@/lib/source-script-playback';
 import {
   parseScriptPlayUrlValue,
   resolveSavedScriptPlayUrl,
 } from '@/lib/source-script';
+import { scriptPlaybackResponse } from '@/lib/source-script-playback';
 
 export const runtime = 'nodejs';
 
 /**
  * GET /api/source-script/play?key=xxx&sourceId=xxx&episodeIndex=0&playUrl=base64url&format=json
  * format=json: 返回 JSON 格式（用于 play 页面）
+ * client=app: 使用独立的 App 代理设置；默认使用网页代理设置
  * 默认: 返回重定向（用于播放器或外部调用）
  */
 export async function GET(request: NextRequest) {
@@ -27,6 +28,10 @@ export async function GET(request: NextRequest) {
     const episodeIndexRaw = searchParams.get('episodeIndex');
     const playUrlEncoded = searchParams.get('playUrl');
     const format = searchParams.get('format');
+    const client = searchParams.get('client') || 'web';
+    if (client !== 'web' && client !== 'app') {
+      return NextResponse.json({ error: '无效的播放客户端' }, { status: 400 });
+    }
 
     if (!key || !sourceId || !episodeIndexRaw || !playUrlEncoded) {
       return NextResponse.json({ error: '缺少参数' }, { status: 400 });
@@ -55,7 +60,8 @@ export async function GET(request: NextRequest) {
 
     const playback = scriptPlaybackResponse(
       result,
-      process.env.NEXT_PUBLIC_PROXY_M3U8_TOKEN || ''
+      process.env.NEXT_PUBLIC_PROXY_M3U8_TOKEN || '',
+      client
     );
     const headers = { 'Cache-Control': 'no-store' };
     if (format === 'json') {

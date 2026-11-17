@@ -3,14 +3,19 @@ export interface ScriptPlaybackResult {
   type: string;
   headers: Record<string, string>;
   proxyMode: boolean;
+  appProxyMode?: boolean;
 }
 
-/** The saved script setting controls media proxying for every client. */
+/** Web and native clients use independently saved proxy settings. */
 export function scriptPlaybackResponse(
   result: ScriptPlaybackResult,
-  proxyToken = ''
+  proxyToken = '',
+  client: 'web' | 'app' = 'web'
 ): ScriptPlaybackResult {
-  if (!result.proxyMode) return result;
+  const proxyMode =
+    client === 'app' ? result.appProxyMode === true : result.proxyMode;
+  const playback = { ...result, proxyMode };
+  if (!proxyMode) return playback;
   const target = new URL(result.url);
   if (!['http:', 'https:'].includes(target.protocol)) {
     throw new Error('代理播放仅支持 HTTP 或 HTTPS 地址');
@@ -22,5 +27,5 @@ export function scriptPlaybackResponse(
     adblock: 'false',
   });
   if (proxyToken) params.set('token', proxyToken);
-  return { ...result, url: `/api/proxy-m3u8?${params.toString()}` };
+  return { ...playback, url: `/api/proxy-m3u8?${params.toString()}` };
 }

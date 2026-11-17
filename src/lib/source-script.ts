@@ -27,6 +27,7 @@ export interface SourceScriptRecord {
   description?: string;
   enabled: boolean;
   proxyMode?: boolean;
+  appProxyMode?: boolean;
   version: string;
   code: string;
   createdAt: number;
@@ -40,6 +41,7 @@ export interface SourceScriptImportItem {
   code: string;
   enabled?: boolean;
   proxyMode?: boolean;
+  appProxyMode?: boolean;
 }
 
 export interface SourceScriptRegistry {
@@ -49,6 +51,7 @@ export interface SourceScriptRegistry {
 export interface SourceScriptTestResult {
   ok: boolean;
   proxyMode?: boolean;
+  appProxyMode?: boolean;
   durationMs: number;
   logs: string[];
   meta?: Record<string, any>;
@@ -71,6 +74,7 @@ export interface PublicSourceScriptSummary {
   version: string;
   updatedAt: number;
   proxyMode: boolean;
+  appProxyMode: boolean;
 }
 
 export interface ScriptSourceDescriptor {
@@ -489,6 +493,7 @@ export async function executeSavedSourceScript(input: {
     logs,
     meta: compiled.meta,
     proxyMode: script.proxyMode === true,
+    appProxyMode: script.appProxyMode === true,
     result,
   };
 }
@@ -506,6 +511,7 @@ export async function listEnabledSourceScripts(): Promise<PublicSourceScriptSumm
       version: item.version,
       updatedAt: item.updatedAt,
       proxyMode: item.proxyMode === true,
+      appProxyMode: item.appProxyMode === true,
     }));
 }
 
@@ -527,6 +533,7 @@ export async function saveSourceScript(input: {
   code: string;
   enabled?: boolean;
   proxyMode?: boolean;
+  appProxyMode?: boolean;
 }) {
   assertScriptKey(input.key);
 
@@ -547,6 +554,7 @@ export async function saveSourceScript(input: {
     existing.code = input.code;
     existing.enabled = input.enabled ?? existing.enabled;
     existing.proxyMode = input.proxyMode ?? existing.proxyMode ?? false;
+    existing.appProxyMode = input.appProxyMode ?? existing.appProxyMode ?? false;
     existing.updatedAt = now;
     existing.version = getNowVersion();
     await saveRegistry(registry);
@@ -561,6 +569,7 @@ export async function saveSourceScript(input: {
     code: input.code,
     enabled: input.enabled ?? true,
     proxyMode: input.proxyMode === true,
+    appProxyMode: input.appProxyMode === true,
     version: getNowVersion(),
     createdAt: now,
     updatedAt: now,
@@ -591,6 +600,7 @@ export async function importSourceScripts(items: SourceScriptImportItem[]) {
       existing.code = item.code;
       existing.enabled = item.enabled ?? existing.enabled;
       existing.proxyMode = item.proxyMode ?? existing.proxyMode ?? false;
+      existing.appProxyMode = item.appProxyMode ?? existing.appProxyMode ?? false;
       existing.updatedAt = now;
       existing.version = getNowVersion();
       imported.push(existing);
@@ -605,6 +615,7 @@ export async function importSourceScripts(items: SourceScriptImportItem[]) {
       code: item.code,
       enabled: item.enabled ?? true,
       proxyMode: item.proxyMode === true,
+      appProxyMode: item.appProxyMode === true,
       version: getNowVersion(),
       createdAt: now,
       updatedAt: now,
@@ -639,16 +650,27 @@ export async function toggleSourceScriptEnabled(id: string) {
   return target;
 }
 
-export async function setSourceScriptProxyMode(id: string, proxyMode: boolean) {
+export async function setSourceScriptProxyMode(
+  id: string,
+  proxyMode: boolean,
+  client: 'web' | 'app' = 'web'
+) {
   if (typeof proxyMode !== 'boolean') {
     throw new Error('服务器代理开关必须为布尔值');
+  }
+  if (client !== 'web' && client !== 'app') {
+    throw new Error('代理客户端必须为 web 或 app');
   }
   const registry = await loadRegistry();
   const target = registry.items.find((item) => item.id === id);
   if (!target) {
     throw new Error('脚本不存在');
   }
-  target.proxyMode = proxyMode;
+  if (client === 'app') {
+    target.appProxyMode = proxyMode;
+  } else {
+    target.proxyMode = proxyMode;
+  }
   target.updatedAt = Date.now();
   await saveRegistry(registry);
   return target;
@@ -865,6 +887,7 @@ export function normalizeScriptDetailResult(input: {
   detailId: string;
   result: any;
   proxyMode?: boolean;
+  appProxyMode?: boolean;
 }) {
   const playbacks = Array.isArray(input.result?.playbacks)
     ? input.result.playbacks
@@ -931,6 +954,7 @@ export function normalizeScriptDetailResult(input: {
     vod_remarks: input.result?.vod_remarks,
     vod_total: input.result?.vod_total,
     proxyMode: input.proxyMode === true,
+    appProxyMode: input.appProxyMode === true,
   };
 }
 
@@ -1053,6 +1077,7 @@ export async function resolveSavedScriptPlayUrl(input: {
       type: 'auto',
       headers: {},
       proxyMode: script.proxyMode === true,
+      appProxyMode: script.appProxyMode === true,
     };
   }
 
@@ -1072,5 +1097,6 @@ export async function resolveSavedScriptPlayUrl(input: {
     type: result?.type || 'auto',
     headers: result?.headers || {},
     proxyMode: script.proxyMode === true,
+    appProxyMode: script.appProxyMode === true,
   };
 }

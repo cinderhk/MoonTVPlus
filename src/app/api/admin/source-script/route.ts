@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
           code: body.code,
           enabled: body.enabled,
           proxyMode: body.proxyMode,
+          appProxyMode: body.appProxyMode,
         });
         return NextResponse.json(
           { ok: true, item: saved },
@@ -120,7 +121,11 @@ export async function POST(request: NextRequest) {
         );
       }
       case 'set_proxy_mode': {
-        const item = await setSourceScriptProxyMode(body.id, body.proxyMode);
+        const item = await setSourceScriptProxyMode(
+          body.id,
+          body.proxyMode,
+          body.client
+        );
         return NextResponse.json(
           { ok: true, item },
           { headers: { 'Cache-Control': 'no-store' } }

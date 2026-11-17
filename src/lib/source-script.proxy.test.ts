@@ -13,6 +13,7 @@ import { db } from './db';
 import {
   executeSavedSourceScript,
   importSourceScripts,
+  listEnabledSourceScripts,
   listSourceScripts,
   normalizeScriptDetailResult,
   resolveSavedScriptPlayUrl,
@@ -139,4 +140,98 @@ test('an invalid script switch update cannot modify other scripts', async () => 
   expect(
     (await listSourceScripts()).find((item) => item.id === saved.id)?.proxyMode
   ).toBe(false);
+});
+
+test('App proxy defaults off independently of an enabled legacy web proxy', async () => {
+  const saved = await saveSourceScript({ ...input, proxyMode: true });
+  expect(saved.appProxyMode).toBe(false);
+  expect((await listEnabledSourceScripts())[0]).toMatchObject({
+    proxyMode: true,
+    appProxyMode: false,
+  });
+});
+
+test('App and web switches persist independently for each script', async () => {
+  const first = await saveSourceScript(input);
+  const second = await saveSourceScript({ ...input, key: 'backup' });
+  await setSourceScriptProxyMode(first.id, true, 'app');
+  await setSourceScriptProxyMode(second.id, true, 'web');
+  const records = await listSourceScripts();
+  expect(records.find((item) => item.id === first.id)).toMatchObject({
+    proxyMode: false,
+    appProxyMode: true,
+  });
+  expect(records.find((item) => item.id === second.id)).toMatchObject({
+    proxyMode: true,
+    appProxyMode: false,
+  });
+  await setSourceScriptProxyMode(first.id, true, 'web');
+  expect(await setSourceScriptProxyMode(first.id, false, 'app')).toMatchObject({
+    proxyMode: true,
+    appProxyMode: false,
+  });
+});
+
+test('saving code and old imports preserve both settings; explicit flags can change them', async () => {
+  const saved = await saveSourceScript({
+    ...input,
+    proxyMode: true,
+    appProxyMode: true,
+  });
+  await saveSourceScript({ ...input, id: saved.id });
+  await importSourceScripts([input]);
+  expect((await listSourceScripts())[0]).toMatchObject({
+    proxyMode: true,
+    appProxyMode: true,
+  });
+  await importSourceScripts([{ ...input, appProxyMode: false }]);
+  expect((await listSourceScripts())[0]).toMatchObject({
+    proxyMode: true,
+    appProxyMode: false,
+  });
+  expect(
+    (await importSourceScripts([{ ...input, key: 'new' }]))[0]
+  ).toMatchObject({
+    proxyMode: false,
+    appProxyMode: false,
+  });
+});
+
+test('execution, detail and playback expose both saved settings', async () => {
+  await saveSourceScript({ ...input, proxyMode: false, appProxyMode: true });
+  const execution = await executeSavedSourceScript({
+    key: input.key,
+    hook: 'detail',
+  });
+  const detail = normalizeScriptDetailResult({
+    source: 'script:guazi:guazi',
+    scriptKey: 'guazi',
+    scriptName: 'Source',
+    sourceId: 'guazi',
+    sourceName: '瓜子',
+    detailId: 'movie',
+    result: execution.result,
+    proxyMode: execution.proxyMode,
+    appProxyMode: execution.appProxyMode,
+  });
+  expect(detail).toMatchObject({ proxyMode: false, appProxyMode: true });
+  expect(
+    await resolveSavedScriptPlayUrl({
+      key: input.key,
+      sourceId: 'guazi',
+      episodeIndex: 0,
+      playUrl: 'raw',
+    })
+  ).toMatchObject({ proxyMode: false, appProxyMode: true });
+});
+
+test('an unknown proxy client cannot alter saved settings', async () => {
+  const saved = await saveSourceScript(input);
+  await expect(
+    setSourceScriptProxyMode(saved.id, true, 'invalid' as 'app')
+  ).rejects.toThrow('代理客户端必须为 web 或 app');
+  expect((await listSourceScripts())[0]).toMatchObject({
+    proxyMode: false,
+    appProxyMode: false,
+  });
 });

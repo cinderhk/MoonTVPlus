@@ -59,6 +59,8 @@ export async function GET(request: NextRequest) {
         sourceName: sourceInfo.name,
         detailId: id,
         result: detailExecution.result,
+        proxyMode: detailExecution.proxyMode === true,
+        appProxyMode: detailExecution.appProxyMode === true,
       });
 
       return NextResponse.json(normalized);

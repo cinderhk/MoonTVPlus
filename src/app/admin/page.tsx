@@ -372,6 +372,7 @@ interface StandaloneSourceScript {
   description?: string;
   enabled: boolean;
   proxyMode?: boolean;
+  appProxyMode?: boolean;
   version: string;
   code: string;
   createdAt: number;
@@ -9582,6 +9583,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
     code: string;
     enabled: boolean;
     proxyMode: boolean;
+    appProxyMode: boolean;
     version?: string;
     updatedAt?: number;
   }>({
@@ -9591,6 +9593,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
     code: '',
     enabled: true,
     proxyMode: false,
+    appProxyMode: false,
   });
   const [testHook, setTestHook] = useState<
     'getSources' | 'search' | 'recommend' | 'detail' | 'resolvePlayUrl'
@@ -9608,6 +9611,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
         code: template,
         enabled: true,
         proxyMode: false,
+        appProxyMode: false,
       });
       setSelectedScriptId(null);
       return;
@@ -9621,6 +9625,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
       code: script.code,
       enabled: script.enabled,
       proxyMode: script.proxyMode === true,
+      appProxyMode: script.appProxyMode === true,
       version: script.version,
       updatedAt: script.updatedAt,
     });
@@ -9658,6 +9663,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
           code: data.template || '',
           enabled: true,
           proxyMode: false,
+          appProxyMode: false,
         });
         setSelectedScriptId(null);
       }
@@ -9684,6 +9690,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
       code: template,
       enabled: true,
       proxyMode: false,
+      appProxyMode: false,
     });
     setTestOutput('');
   };
@@ -9701,6 +9708,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
       code: editor.code,
       enabled: editor.enabled,
       proxyMode: editor.proxyMode,
+      appProxyMode: editor.appProxyMode,
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -9769,6 +9777,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
           code: editor.code,
           enabled: editor.enabled,
           proxyMode: editor.proxyMode,
+          appProxyMode: editor.appProxyMode,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -9841,7 +9850,10 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
     });
   };
 
-  const handleToggleProxyMode = async (script: StandaloneSourceScript) => {
+  const handleToggleProxyMode = async (
+    script: StandaloneSourceScript,
+    client: 'web' | 'app'
+  ) => {
     await withLoading(`proxySourceScript_${script.id}`, async () => {
       const response = await fetch('/api/admin/source-script', {
         method: 'POST',
@@ -9849,7 +9861,10 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
         body: JSON.stringify({
           action: 'set_proxy_mode',
           id: script.id,
-          proxyMode: script.proxyMode !== true,
+          client,
+          proxyMode: client === 'app'
+            ? script.appProxyMode !== true
+            : script.proxyMode !== true,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -9866,6 +9881,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
           ? {
               ...prev,
               proxyMode: updated.proxyMode === true,
+              appProxyMode: updated.appProxyMode === true,
               updatedAt: updated.updatedAt,
             }
           : prev
@@ -9982,7 +9998,7 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
           </div>
 
           <p className='text-xs text-gray-500 dark:text-gray-400'>
-            服务器代理按脚本独立设置，默认关闭。开启后该脚本的视频流经过服务器，且不支持 App 投屏。
+            网页代理与 App 代理分别设置，默认关闭。App 代理开启后，视频流经过服务器，无法使用直连投屏。
           </p>
           <div className='space-y-3 max-h-[38rem] overflow-y-auto pr-1'>
             {loadingScripts ? (
@@ -10036,37 +10052,44 @@ const VideoSourceScriptLab = ({ config, refreshConfig }: {
                     <TvSourceVisibilitySwitch sourceKey={`script:${script.key}`} name={script.name}
                       hiddenKeys={config?.TvHiddenSourceKeys} onSaved={refreshConfig} />
                     <div className='flex items-center justify-between gap-2'>
-                      <button
-                        type='button'
-                        role='switch'
-                        aria-checked={script.proxyMode === true}
-                        aria-label={`${script.name}的服务器代理`}
-                        title={`仅对脚本“${script.name}”生效，修改后立即保存`}
-                        onClick={() => handleToggleProxyMode(script)}
-                        disabled={
-                          isLoading(`proxySourceScript_${script.id}`) ||
-                          (editor.id === script.id && isLoading('saveSourceScript'))
-                        }
-                        className='inline-flex items-center gap-2 disabled:opacity-50'
-                      >
-                        <span>服务器代理</span>
-                        <span
-                          className={`relative inline-flex h-5 w-9 rounded-full transition-colors ${
-                            script.proxyMode === true
-                              ? 'bg-blue-600'
-                              : 'bg-gray-300 dark:bg-gray-600'
-                          }`}
-                        >
-                          <span
-                            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                              script.proxyMode === true
-                                ? 'translate-x-[18px]'
-                                : 'translate-x-0.5'
-                            }`}
-                          />
-                        </span>
-                        <span>{script.proxyMode === true ? '开启' : '关闭'}</span>
-                      </button>
+                      <div className='space-y-2'>
+                        {(['web', 'app'] as const).map((client) => {
+                          const enabled = client === 'app'
+                            ? script.appProxyMode === true
+                            : script.proxyMode === true;
+                          const label = client === 'app' ? 'App 代理' : '网页代理';
+                          return (
+                            <button
+                              key={client}
+                              type='button'
+                              role='switch'
+                              aria-checked={enabled}
+                              aria-label={`${script.name}的${label}`}
+                              title={`仅对脚本“${script.name}”的${label}生效，修改后立即保存`}
+                              onClick={() => handleToggleProxyMode(script, client)}
+                              disabled={
+                                isLoading(`proxySourceScript_${script.id}`) ||
+                                (editor.id === script.id && isLoading('saveSourceScript'))
+                              }
+                              className='flex items-center gap-2 disabled:opacity-50'
+                            >
+                              <span>{label}</span>
+                              <span
+                                className={`relative inline-flex h-5 w-9 rounded-full transition-colors ${
+                                  enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                                }`}
+                              >
+                                <span
+                                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                                    enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                                  }`}
+                                />
+                              </span>
+                              <span>{enabled ? '开启' : '关闭'}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                       <button
                         type='button'
                         onClick={() => handleToggleEnabled(script.id)}

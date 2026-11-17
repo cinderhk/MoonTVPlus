@@ -45,3 +45,43 @@ test('non-HTTP media cannot be wrapped in a server proxy', () => {
     })
   ).toThrow();
 });
+
+test.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+])('web=%s and app=%s are applied independently', (web, app) => {
+  const source = { ...direct, proxyMode: web, appProxyMode: app };
+  const browser = scriptPlaybackResponse(source);
+  const native = scriptPlaybackResponse(source, '', 'app');
+  expect(browser.proxyMode).toBe(web);
+  expect(native.proxyMode).toBe(app);
+  expect(browser.url.startsWith('/api/proxy-m3u8?')).toBe(web);
+  expect(native.url.startsWith('/api/proxy-m3u8?')).toBe(app);
+  expect(web || browser.url === direct.url).toBe(true);
+  expect(app || native.url === direct.url).toBe(true);
+});
+
+test('legacy web-only settings do not enable the new App proxy', () => {
+  const source = { ...direct, proxyMode: true };
+  expect(scriptPlaybackResponse(source).proxyMode).toBe(true);
+  expect(scriptPlaybackResponse(source, '', 'app')).toEqual({
+    ...source,
+    proxyMode: false,
+  });
+});
+
+test('direct App playback preserves the script request headers', () => {
+  const source = {
+    ...direct,
+    headers: { Referer: 'https://provider.example/' },
+    proxyMode: true,
+    appProxyMode: false,
+  };
+  expect(scriptPlaybackResponse(source, '', 'app')).toMatchObject({
+    url: direct.url,
+    headers: source.headers,
+    proxyMode: false,
+  });
+});
